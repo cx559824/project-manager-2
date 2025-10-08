@@ -1,5 +1,11 @@
 import type { User } from "@/types";
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+} from "react";
 import { queryClient } from "./react-query-provider";
 import { useLocation, useNavigate } from "react-router";
 import { publicRoutes } from "@/lib";
@@ -8,14 +14,17 @@ interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (data: any) => Promise<void>;
+  accessToken: string | null;
+  login: (data: { accessToken: string; user: User }) => Promise<void>;
   logout: () => Promise<void>;
+  refreshAccessToken: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -23,7 +32,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const currentPath = useLocation().pathname;
   const isPublicRoute = publicRoutes.includes(currentPath);
 
-  // check if user is authenticated
+  // 🔹 Load user from storage on mount
   useEffect(() => {
     const checkAuth = async () => {
       setIsLoading(true);
@@ -33,15 +42,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (storedUser) {
           setUser(JSON.parse(storedUser));
           setIsAuthenticated(true);
-        } else {
-          setUser(null);
-          setIsAuthenticated(false);
-          if (!isPublicRoute) {
-            navigate("/sign-in");
+
+          // Try refreshing access token immediately
+          const token = await refreshAccessToken();
+          if (token) {
+            setAccessToken(token);
+          } else {
+            handleLogout();
           }
+        } else {
+          handleLogout();
         }
       } catch (error) {
         console.error("Auth check failed:", error);
+        handleLogout();
       } finally {
         setIsLoading(false);
       }
@@ -50,39 +64,68 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     checkAuth();
   }, []);
 
-  useEffect(() => {
-    const handleLogout = () => {
-      logout();
+  const handleLogout = useCallback(() => {
+    logout();
+    if (!isPublicRoute) {
       navigate("/sign-in");
-    };
-    window.addEventListener("force-logout", handleLogout);
-    return () => window.removeEventListener("force-logout", handleLogout);
+    }
+  }, [navigate, isPublicRoute]);
+
+  // 🔹 Refresh access token (calls backend /refresh endpoint)
+  const refreshAccessToken = useCallback(async (): Promise<string | null> => {
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/refresh`, {
+        method: "POST",
+        credentials: "include", // 🔥 important: sends cookie
+      });
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const data = await res.json();
+      if (data.accessToken) {
+        setAccessToken(data.accessToken);
+        return data.accessToken;
+      }
+      return null;
+    } catch (error) {
+      console.error("Failed to refresh access token", error);
+      return null;
+    }
   }, []);
 
-  const login = async (data: any) => {
-    localStorage.setItem("token", data.token);
+  // 🔹 Login
+  const login = async (data: { accessToken: string; user: User }) => {
     localStorage.setItem("user", JSON.stringify(data.user));
-
     setUser(data.user);
+    setAccessToken(data.accessToken);
     setIsAuthenticated(true);
   };
 
+  // 🔹 Logout
   const logout = async () => {
-    localStorage.removeItem("token");
     localStorage.removeItem("user");
-
     setUser(null);
+    setAccessToken(null);
     setIsAuthenticated(false);
-
     queryClient.clear();
+
+    // hit backend logout to clear cookie
+    await fetch(`${import.meta.env.VITE_API_URL}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
   };
 
-  const values = {
+  const values: AuthContextType = {
     user,
     isAuthenticated,
     isLoading,
+    accessToken,
     login,
     logout,
+    refreshAccessToken,
   };
 
   return <AuthContext.Provider value={values}>{children}</AuthContext.Provider>;
