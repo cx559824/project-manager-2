@@ -9,6 +9,7 @@ import {
 import { queryClient } from "./react-query-provider";
 import { useLocation, useNavigate } from "react-router";
 import { publicRoutes } from "@/lib";
+import { API_BASE_URL } from "@/lib/config";
 
 interface AuthContextType {
   user: User | null;
@@ -38,30 +39,32 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setIsLoading(true);
       try {
         const storedUser = localStorage.getItem("user");
-
-        if (storedUser) {
+        // Always try to refresh, even if user is missing
+        const token = await refreshAccessToken();
+        if (token && storedUser) {
           setUser(JSON.parse(storedUser));
           setIsAuthenticated(true);
-
-          // Try refreshing access token immediately
-          const token = await refreshAccessToken();
-          if (token) {
-            setAccessToken(token);
-          } else {
-            handleLogout();
-          }
+          setAccessToken(token);
         } else {
           handleLogout();
         }
       } catch (error) {
-        console.error("Auth check failed:", error);
         handleLogout();
       } finally {
         setIsLoading(false);
       }
     };
 
+    const onForceLogout = () => {
+      handleLogout();
+    };
+
+    window.addEventListener("force-logout", onForceLogout);
     checkAuth();
+
+    return () => {
+      window.removeEventListener("force-logout", onForceLogout);
+    };
   }, []);
 
   const handleLogout = useCallback(() => {
@@ -74,7 +77,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // 🔹 Refresh access token (calls backend /refresh endpoint)
   const refreshAccessToken = useCallback(async (): Promise<string | null> => {
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/refresh`, {
+      const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
         method: "POST",
         credentials: "include", // 🔥 important: sends cookie
       });
